@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/as/log"
+	log "github.com/cbsinteractive/mc-log"
 )
 
 func init() {
