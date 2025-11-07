@@ -1,12 +1,14 @@
 package log_test
 
 import (
+	"bytes"
 	"io"
 	"io/ioutil"
 	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	log "github.com/cbsinteractive/mc-log"
 )
@@ -143,6 +145,334 @@ func TestAddArray(t *testing.T) {
 	want := `{"svc":"test", "ts":12345, "level":"error", "ip":"1.2.3.4", "port":"1111", "client":"mothra", "host":"example.com", "path":"/file.txt", "query":"what", "err":"EOF", "msg":"custom fields"}`
 	if have != want {
 		t.Fatalf("bad log:\n\t\thave: %s\n\t\twant: %s", have, want)
+	}
+}
+
+func TestPrintf_LogConfig(t *testing.T) {
+	tests := []struct {
+		name           string
+		setup          func(*testing.T) func() // setup function returns cleanup function
+		line           log.Line
+		format         string
+		args           []interface{}
+		expectedOutput string
+		expectEmpty    bool
+	}{
+		{
+			name: "Debug with DebugOn true",
+			setup: func(*testing.T) func() {
+				oldDebugOn := log.Config.DebugOn
+				log.Config.DebugOn = true
+				return func() { log.Config.DebugOn = oldDebugOn }
+			},
+			line:           log.Debug,
+			format:         "debug message: %s",
+			args:           []interface{}{"enabled"},
+			expectedOutput: `{"svc":"test", "ts":12345, "level":"debug", "msg":"debug message: enabled"}`,
+		},
+		{
+			name: "Debug with DebugOn false",
+			setup: func(*testing.T) func() {
+				oldDebugOn := log.Config.DebugOn
+				log.Config.DebugOn = false
+				return func() { log.Config.DebugOn = oldDebugOn }
+			},
+			line:        log.Debug,
+			format:      "debug message: %s",
+			args:        []interface{}{"disabled"},
+			expectEmpty: true,
+		},
+		{
+			name: "Debug with regex allowlist matching",
+			setup: func(t *testing.T) func() {
+				oldDebugOn := log.Config.DebugOn
+				log.Config.DebugOn = false
+				err := log.SetLogConfig(log.LogConfig{
+					MinLevel:         log.LevelDebug,
+					RegexPassthrough: []string{".*important.*"},
+					RegexEnabled:     true,
+					UpdatedAt:        time.Now(),
+				})
+				if err != nil {
+					t.Fatalf("failed to set regex list: %v", err)
+				}
+				return func() {
+					log.Config.DebugOn = oldDebugOn
+					log.SetLogConfig(log.LogConfig{
+						MinLevel:         log.LevelDebug,
+						RegexPassthrough: []string{},
+						RegexEnabled:     true,
+						UpdatedAt:        time.Time{},
+					})
+				}
+			},
+			line:           log.Debug,
+			format:         "important debug message",
+			args:           nil,
+			expectedOutput: `{"svc":"test", "ts":12345, "level":"debug", "msg":"important debug message"}`,
+		},
+		{
+			name: "Debug with regex allowlist not matching",
+			setup: func(t *testing.T) func() {
+				oldDebugOn := log.Config.DebugOn
+				log.Config.DebugOn = false
+				err := log.SetLogConfig(log.LogConfig{
+					MinLevel:         log.LevelDebug,
+					RegexPassthrough: []string{".*important.*"},
+					RegexEnabled:     true,
+					UpdatedAt:        time.Now(),
+				})
+				if err != nil {
+					t.Fatalf("failed to set regex list: %v", err)
+				}
+				return func() {
+					log.Config.DebugOn = oldDebugOn
+					log.SetLogConfig(log.LogConfig{
+						MinLevel:         log.LevelDebug,
+						RegexPassthrough: []string{},
+						RegexEnabled:     true,
+						UpdatedAt:        time.Time{},
+					})
+				}
+			},
+			line:        log.Debug,
+			format:      "regular debug message",
+			args:        nil,
+			expectEmpty: true,
+		},
+		{
+			name: "Info below MinLogLevel (filtered)",
+			setup: func(t *testing.T) func() {
+				err := log.SetLogConfig(log.LogConfig{
+					MinLevel:         log.LevelWarn,
+					RegexPassthrough: []string{},
+					RegexEnabled:     true,
+					UpdatedAt:        time.Now(),
+				})
+
+				if err != nil {
+					t.Fatalf("failed to set min log level: %v", err)
+				}
+				return func() {
+					log.SetLogConfig(log.LogConfig{
+						MinLevel:         log.LevelDebug,
+						RegexPassthrough: []string{},
+						RegexEnabled:     true,
+						UpdatedAt:        time.Time{},
+					})
+				}
+			},
+			line:        log.Info,
+			format:      "info message",
+			args:        nil,
+			expectEmpty: true,
+		},
+		{
+			name: "Warn at MinLogLevel (printed)",
+			setup: func(t *testing.T) func() {
+				err := log.SetLogConfig(log.LogConfig{
+					MinLevel:         log.LevelWarn,
+					RegexPassthrough: []string{},
+					RegexEnabled:     true,
+					UpdatedAt:        time.Now(),
+				})
+				if err != nil {
+					t.Fatalf("failed to set min log level: %v", err)
+				}
+				return func() {
+					log.SetLogConfig(log.LogConfig{
+						MinLevel:         log.LevelDebug,
+						RegexPassthrough: []string{},
+						RegexEnabled:     true,
+						UpdatedAt:        time.Time{},
+					})
+				}
+			},
+			line:           log.Warn,
+			format:         "warn message",
+			args:           nil,
+			expectedOutput: `{"svc":"test", "ts":12345, "level":"warn", "msg":"warn message"}`,
+		},
+		{
+			name: "Error above MinLogLevel (printed)",
+			setup: func(t *testing.T) func() {
+				err := log.SetLogConfig(log.LogConfig{
+					MinLevel:         log.LevelWarn,
+					RegexPassthrough: []string{},
+					RegexEnabled:     true,
+					UpdatedAt:        time.Now(),
+				})
+				if err != nil {
+					t.Fatalf("failed to set min log level: %v", err)
+				}
+				return func() {
+					log.SetLogConfig(log.LogConfig{
+						MinLevel:         log.LevelDebug,
+						RegexPassthrough: []string{},
+						RegexEnabled:     true,
+						UpdatedAt:        time.Time{},
+					})
+				}
+			},
+			line:           log.Error,
+			format:         "error message",
+			args:           nil,
+			expectedOutput: `{"svc":"test", "ts":12345, "level":"error", "msg":"error message"}`,
+		},
+		{
+			name: "Info below MinLogLevel with regex allowlist matching",
+			setup: func(t *testing.T) func() {
+				err := log.SetLogConfig(log.LogConfig{
+					MinLevel:         log.LevelWarn,
+					RegexPassthrough: []string{".*critical.*"},
+					RegexEnabled:     true,
+					UpdatedAt:        time.Now(),
+				})
+				if err != nil {
+					t.Fatalf("failed to set min log level: %v", err)
+				}
+				return func() {
+					log.SetLogConfig(log.LogConfig{
+						MinLevel:         log.LevelDebug,
+						RegexPassthrough: []string{},
+						RegexEnabled:     true,
+						UpdatedAt:        time.Time{},
+					})
+				}
+			},
+			line:           log.Info,
+			format:         "critical info message",
+			args:           nil,
+			expectedOutput: `{"svc":"test", "ts":12345, "level":"info", "msg":"critical info message"}`,
+		},
+		{
+			name: "Info below MinLogLevel with regex allowlist not matching",
+			setup: func(t *testing.T) func() {
+				err := log.SetLogConfig(log.LogConfig{
+					MinLevel:         log.LevelWarn,
+					RegexPassthrough: []string{".*critical.*"},
+					RegexEnabled:     true,
+					UpdatedAt:        time.Now(),
+				})
+				if err != nil {
+					t.Fatalf("failed to set min log level: %v", err)
+				}
+				return func() {
+					log.SetLogConfig(log.LogConfig{
+						MinLevel:         log.LevelDebug,
+						RegexPassthrough: []string{},
+						RegexEnabled:     true,
+						UpdatedAt:        time.Time{},
+					})
+				}
+			},
+			line:        log.Info,
+			format:      "regular info message",
+			args:        nil,
+			expectEmpty: true,
+		},
+		{
+			name: "Multiple regex patterns - first matches",
+			setup: func(t *testing.T) func() {
+				err := log.SetLogConfig(log.LogConfig{
+					MinLevel:         log.LevelFatal,
+					RegexPassthrough: []string{".*error.*", ".*warning.*"},
+					RegexEnabled:     true,
+					UpdatedAt:        time.Now(),
+				})
+				if err != nil {
+					t.Fatalf("failed to set regex list: %v", err)
+				}
+				return func() {
+					log.SetLogConfig(log.LogConfig{
+						MinLevel:         log.LevelDebug,
+						RegexPassthrough: []string{},
+						RegexEnabled:     true,
+						UpdatedAt:        time.Time{},
+					})
+				}
+			},
+			line:           log.Debug,
+			format:         "debug error message",
+			args:           nil,
+			expectedOutput: `{"svc":"test", "ts":12345, "level":"debug", "msg":"debug error message"}`,
+		},
+		{
+			name: "Multiple regex patterns - second matches",
+			setup: func(t *testing.T) func() {
+				err := log.SetLogConfig(log.LogConfig{
+					MinLevel:         log.LevelFatal,
+					RegexPassthrough: []string{".*error.*", ".*warning.*"},
+					RegexEnabled:     true,
+					UpdatedAt:        time.Now(),
+				})
+				if err != nil {
+					t.Fatalf("failed to set regex list: %v", err)
+				}
+				return func() {
+					log.SetLogConfig(log.LogConfig{
+						MinLevel:         log.LevelDebug,
+						RegexPassthrough: []string{},
+						RegexEnabled:     true,
+						UpdatedAt:        time.Time{},
+					})
+				}
+			},
+			line:           log.Debug,
+			format:         "debug warning message",
+			args:           nil,
+			expectedOutput: `{"svc":"test", "ts":12345, "level":"debug", "msg":"debug warning message"}`,
+		},
+		{
+			name: "Multiple regex patterns - neither matches",
+			setup: func(t *testing.T) func() {
+				err := log.SetLogConfig(log.LogConfig{
+					MinLevel:         log.LevelFatal,
+					RegexPassthrough: []string{".*error.*", ".*warning.*"},
+					RegexEnabled:     true,
+					UpdatedAt:        time.Now(),
+				})
+				if err != nil {
+					t.Fatalf("failed to set regex list: %v", err)
+				}
+				return func() {
+					log.SetLogConfig(log.LogConfig{
+						MinLevel:         log.LevelDebug,
+						RegexPassthrough: []string{},
+						RegexEnabled:     true,
+						UpdatedAt:        time.Time{},
+					})
+				}
+			},
+			line:        log.Debug,
+			format:      "debug regular message",
+			args:        nil,
+			expectEmpty: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			oldOutput := log.SetOutput(&buf)
+			defer log.SetOutput(oldOutput)
+
+			cleanup := tt.setup(t)
+			defer cleanup()
+
+			tt.line.Printf(tt.format, tt.args...)
+
+			output := buf.String()
+			if tt.expectEmpty {
+				if output != "" {
+					t.Fatalf("expected no output, got: %s", output)
+				}
+			} else if tt.expectedOutput != "" {
+				if !strings.Contains(output, tt.expectedOutput) {
+					t.Fatalf("bad log output:\n\t\thave: %s\n\t\twant to contain: %s", output, tt.expectedOutput)
+				}
+			}
+		})
 	}
 }
 

@@ -5,7 +5,6 @@
 // This code may be copied and pasted into your microservice
 // and modified to your liking. Put it in a package called
 // log. A little copying is better than a little dependency.
-//
 package log
 
 import (
@@ -13,11 +12,31 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"sync"
 	"time"
 )
 
 // Line allows a log line to be embedded somewhere
 type Line = line
+
+type LevelInt int
+
+type LogConfig struct {
+	MinLevel         LevelInt
+	RegexPassthrough []string
+	RegexEnabled     bool
+	DebugOn          bool
+	UpdatedAt        time.Time
+}
+
+const (
+	LevelDebug LevelInt = iota + 1
+	LevelInfo
+	LevelWarn
+	LevelError
+	LevelFatal
+)
 
 var (
 	// Service name (can be set in main or elsewhere)
@@ -34,18 +53,27 @@ var (
 
 	// Default is the level used when calling Printf and Fatalf
 	Default = Info
+
+	Config = LogConfig{
+		MinLevel:         LevelDebug,
+		RegexPassthrough: []string{},
+		RegexEnabled:     false,
+		DebugOn:          false,
+		UpdatedAt:        time.Time{},
+	}
+	compiledRegex = []*regexp.Regexp{}
+	setMutex      = sync.Mutex{}
 )
 
 var (
 	// Info, Warn, and so forth are commonly encountered log "levels".
-	Info  = line{Level: "info"}
-	Warn  = line{Level: "warn"}
-	Error = line{Level: "error"}
-	Fatal = line{Level: "fatal"}
+	Info  = line{Level: "info", LevelInt: LevelInfo}
+	Warn  = line{Level: "warn", LevelInt: LevelWarn}
+	Error = line{Level: "error", LevelInt: LevelError}
+	Fatal = line{Level: "fatal", LevelInt: LevelFatal}
 
-	// Debug is a special level, it is only printed if DebugOn is true
-	Debug   = line{Level: "debug"}
-	DebugOn = false
+	// Debug is a special level, it is only printed if Config.DebugOn is true
+	Debug = line{Level: "debug", LevelInt: LevelDebug}
 )
 
 var stderr = io.Writer(os.Stderr)
@@ -65,8 +93,9 @@ func SetOutput(w io.Writer) (old io.Writer) {
 type line struct {
 	fn func(line) line
 	fields
-	Level string
-	msg   string
+	Level    string
+	LevelInt LevelInt
+	msg      string
 }
 
 // Printf attaches the formatted message to line and outputs
@@ -81,8 +110,13 @@ type line struct {
 //
 // Prefer log.Error.F() to log.Error.Printf() unless using Add
 func (l line) Printf(f string, v ...interface{}) {
-	if l.Level == Debug.Level && !DebugOn {
-		return
+	checkDebug := l.Level == Debug.Level && !Config.DebugOn
+	checkMinLevel := l.LevelInt < Config.MinLevel
+	if checkDebug || checkMinLevel {
+		// check to see if message matches any regex to allow message to be printed
+		if !RegexPassthrough(f, v...) {
+			return
+		}
 	}
 	fmt.Fprintln(stderr, l.Msg(f, v...).String())
 	if l.Level == "fatal" {
@@ -224,8 +258,8 @@ type trapme string
 // not affected. Trap calls os.Exit(1) if the panic occured from these
 // functions.
 //
-// func main(){
-// 		defer log.Trap()
+//	func main(){
+//			defer log.Trap()
 //
 // }
 func Trap() {
@@ -244,4 +278,34 @@ func zero(v interface{}) bool {
 		return false
 	}
 	return len(t) == 0
+}
+
+func SetLogConfig(config LogConfig) error {
+	setMutex.Lock()
+	defer setMutex.Unlock()
+	Config = config
+	// compile the regexes
+	for _, exp := range config.RegexPassthrough {
+		reg, err := regexp.Compile(exp)
+		if err != nil {
+			return err
+		}
+		compiledRegex = append(compiledRegex, reg)
+	}
+	return nil
+}
+
+func RegexPassthrough(f string, v ...interface{}) bool {
+	if !Config.RegexEnabled {
+		return false
+	}
+	setMutex.Lock()
+	defer setMutex.Unlock()
+	msg := fmt.Sprintf(f, v...)
+	for _, reg := range compiledRegex {
+		if reg.MatchString(msg) {
+			return true
+		}
+	}
+	return false
 }
