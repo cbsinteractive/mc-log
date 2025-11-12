@@ -110,9 +110,11 @@ type line struct {
 //
 // Prefer log.Error.F() to log.Error.Printf() unless using Add
 func (l line) Printf(f string, v ...interface{}) {
-	checkDebug := l.Level == Debug.Level && !Config.DebugOn
-	checkMinLevel := l.LevelInt < Config.MinLevel
-	if checkDebug || checkMinLevel {
+	// if msg is debug, checks if log msg should NOT be printed
+	exitDebugMsg := l.Level == Debug.Level && !Config.DebugOn
+	// for other levels, checks if log msg should NOT be printed based on min level
+	exitMinLevelMsg := l.LevelInt < Config.MinLevel
+	if exitDebugMsg || exitMinLevelMsg {
 		// check to see if message matches any regex to allow message to be printed
 		if !RegexPassthrough(f, v...) {
 			return
